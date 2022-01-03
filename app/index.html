@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset='UTF-8' />
+
+    <style type='text/css'>
+        * {
+            padding: 0;
+            margin: 0;
+            font-size: 14pt;
+            box-sizing: border-box;
+        }
+
+        body {
+            overflow: hidden;
+        }
+
+        div#toolsPalette {
+            position: absolute;
+            top: 50%;
+            left: 0;
+
+            transform: translateY(-50%);
+        }
+
+        div.tool {
+            text-transform: capitalize;
+            background-color: rgba(146, 146, 146, 0.75);
+            padding: 5px;
+            border: 2px solid black;
+            border-left: 0;
+        }
+
+        div.tool:hover {
+            background-color: rgba(24, 24, 24, 0.75);
+            color: white;
+            cursor: pointer;
+        }
+
+        div.tool.active {
+            background-color: rgba(24, 24, 24, 0.75);
+            color: white;
+            border-left: 5px solid rgb(33, 168, 60);
+        }
+
+        button {
+            position: absolute;
+            top: 30%;
+            left: 0;
+            text-transform: capitalize;
+            background-color: rgba(146, 146, 146, 0.75);
+            padding: 5px;
+            border: 2px solid black;
+            border-left: 0;
+            font-family: 'Times New Roman', Times, serif
+        }
+
+        button:hover {
+            background-color: rgba(24, 24, 24, 0.75);
+            color: white;
+            cursor: pointer;
+        }
+
+        div#canvasView {
+            min-width: 100vw;
+            min-height: 100vh;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id='toolsPalette'></div>
+    <div id='canvasView'></div>
+    <button id='clear'>Clear</button>
+
+    <script type='text/javascript' src='js/pixi.js'></script>
+    <script type='module'>
+        // Get the LineTool!
+        import { LineTool } from './js/linetool.mjs';
+
+        let app = null;
+        let activeTool = null;      // Div of current active tool
+        let registeredTools = [];   // Map of (String->Class)
+
+        let worldShapes = [];       // All drawn shapes
+        let selectedShapes = []     // All shapes that currently selected
+
+        function init() {
+            let canvasView = document.getElementById('canvasView');
+            let toolsPalette = document.getElementById('toolsPalette');
+            let clearButton = document.getElementById('clear');
+            clearSpace();
+            // handleKey();
+
+            // Initialize all our tools
+            let tools = [LineTool];
+            for (let tool of tools) {
+                registeredTools[tool.toolName] = tool;
+
+                let toolDiv = tool.renderTool();
+                toolDiv.addEventListener('mousedown', function (event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    switchTool(event);
+                })
+
+                toolsPalette.appendChild(toolDiv);
+            }
+
+            app = new PIXI.Application({
+                width: 256,
+                height: 256,
+                resizeTo: canvasView,
+                autoResize: true,
+                resolution: devicePixelRatio,
+                antialias: false,
+                transparent: true,
+                backgroundColor: 0xFFFFFF
+            });
+
+            // Allow user to use mouse on canvas
+            canvasView.addEventListener('mousedown', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (activeTool !== null) {
+                    activateTool(event);
+                }
+                else {
+                    // No Active tool, so see if need to pass the
+                    // MouseDown to one of the selected shapes
+                    let mouseDownPoint = new PIXI.Point(event.offsetX, event.offsetY);
+
+                    let inShape = false;
+                    for (let shape of selectedShapes) {
+                        if (shape.contains(mouseDownPoint)) {
+                            inShape = true;
+                            break;
+                        }
+                    }
+
+                    if (inShape === false) {
+                        for (let shape of selectedShapes) {
+                            shape.selected = false;
+                        }
+                        selectedShapes = [];
+
+                        for (let shape of worldShapes) {
+                            if (shape.contains(mouseDownPoint)) {
+                                selectedShapes.push(shape);
+                                shape.selected = true;
+                                break;
+                            }
+                        }
+                    }
+                    else {
+                        let eventHandled = false;
+                        for (let shape of selectedShapes) {
+                            if (shape.contains(mouseDownPoint)) {
+                                eventHandled = shape.mouseDown(event) || eventHandled;
+                            }
+                        }
+
+                        // Event wasn't handled by a selected shape, 
+                        //  so deselect everything
+                        if (!eventHandled) {
+                            for (let shape of selectedShapes) {
+                                shape.selected = false;
+                            }
+                            selectedShapes = []
+                        }
+                    }
+                }
+
+            })
+
+            // Allow selected shapes to recieve a mouse movement
+            canvasView.addEventListener('mousemove', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                for (let shape of selectedShapes) {
+                    shape.mouseMove(event);
+                }
+            })
+
+            // Allow selected shape to recieve a mouse up event
+            canvasView.addEventListener('mouseup', function (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                for (let shape of selectedShapes) {
+                    shape.mouseUp(event);
+                }
+            })
+
+            canvasView.appendChild(app.view);
+        }
+
+        /**
+         * Uses the active tool to interact with the canvas
+         * @param event the location clicked on the canvas
+         */
+        function activateTool(event) {
+
+            // No selected Shapes, so we definitely make a new shape
+            if (selectedShapes.length === 0) {
+
+                // Grab the Class associated with the active tool
+                let toolID = activeTool.getAttribute('data-tool');
+                let tool = registeredTools[toolID];
+
+                // Add the tool to the drawing workspace
+                let shape = new tool();
+                app.stage.addChild(shape.view);
+
+                // Register the shape and select it
+                worldShapes.push(shape);
+                shape.selected = true;
+                selectedShapes = [shape];
+            }
+
+            // Send the mouse click to all selected shapes
+            let stayActivated = false;
+            for (let shape of selectedShapes) {
+                stayActivated = shape.mouseDown(event) || stayActivated;
+            }
+
+            // No shape wanted the event, so deselect everything
+            if (stayActivated === false) {
+                for (let shape of selectedShapes) {
+                    shape.selected = false;
+                }
+                selectedShapes = [];
+            }
+
+        }
+
+        /**
+         * Switches from one tool to another
+         * @param event event which caused the switch
+         */
+        function switchTool(event) {
+            let activeToolID = '';
+
+            // Remove the active status of the current tool
+            if (activeTool !== null) {
+                activeToolID = activeTool.getAttribute('data-tool');
+                activeTool.classList.remove('active');
+            }
+
+            // Set the active status of the selected tool
+            if (event.target.getAttribute('data-tool') !== activeToolID) {
+                activeTool = event.target;
+                activeTool.classList.add('active');
+            }
+            else {
+                activeTool = null;
+            }
+
+            // Deselect everything
+            for (let shape of selectedShapes) {
+                shape.selected = false;
+            }
+            selectedShapes = [];
+        }
+
+        //use delete key to remove selected line
+        window.addEventListener('keydown', function (evt) {
+            let keyPressed = evt.which;
+            //if backspace key is pressed
+            if (keyPressed == 8) {
+                //create new empty array to push lines to keep into
+                let savedlines = [];
+                for (let i = 0; i < worldShapes.length; i++) {
+                    for (let j = 0; j < selectedShapes.length; j++) {
+                        //if not the selected line, pushed to array to keep  
+                        if (selectedShapes[j] != worldShapes[i]) {
+                            savedlines.push(worldShapes[i]);
+                            break;
+                        }
+
+                        //if selected line, clears the line from the screen
+                        if (selectedShapes[j] == worldShapes[i]) {
+                            for (let tool of selectedShapes) {
+                                tool.view.clear();
+                            }
+                        }
+                    }
+                }
+                //sets worldShapes to the lines that are kept
+                worldShapes = savedlines;
+                //sets selectedShapes to be empty
+                selectedShapes = [];
+            }
+        })
+
+        //pressing the clear button to clear the screen
+        function clearSpace() {
+            let clearButton = document.getElementById('clear');
+            clearButton.addEventListener('mousedown', function () {
+                //if the clear button is pressed, clears the screen
+                for (let tool of worldShapes) {
+                    tool.view.clear();
+                }
+            })
+        }
+
+        window.onload = init;
+    </script>
+</body>
+
+</html>
